@@ -18,7 +18,7 @@ const admin = require("firebase-admin");
 const serviceAccount = require("./contestify-d5372-firebase-adminsdk.json");
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount)
 });
 
 
@@ -68,6 +68,53 @@ async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
         await client.connect();
+
+        const db = client.db('contestify-db');
+        const usersCollection = db.collection('users')
+
+
+        // Prevent duplicate user
+        await usersCollection.createIndex(
+            { email: 1 },
+            { unique: true }
+        );
+
+        app.post('/users', async (req, res) => {
+
+            const user = req.body;
+            user.role = "user";
+            user.createdAt = new Date();
+            const email = user.email;
+            const userExists = await usersCollection.findOne({ email })
+
+            if (userExists) {
+                return res.send({ message: 'user exists' })
+            }
+
+            const result = await usersCollection.insertOne(user);
+            res.send(result);
+
+        })
+
+        // get specific user (email)
+        app.get('/users', verifyFBToken, async (req, res) => {
+
+            try {
+
+                const { email } = req.query;
+
+                if (!email) {
+                    return res.status(400).send({ message: "Email is required" });
+                }
+
+                const result = await usersCollection.findOne({ email });
+                res.send(result);
+
+            } catch (err) {
+                res.status(500).send({ message: "Failed to fetch user" });
+            }
+        });
+
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
