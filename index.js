@@ -11,8 +11,9 @@ app.use(cors())
 app.use(express.json())
 
 
-// firebase 
 
+
+// firebase 
 const admin = require("firebase-admin");
 
 const serviceAccount = require("./contestify-d5372-firebase-adminsdk.json");
@@ -23,12 +24,19 @@ admin.initializeApp({
 
 
 const verifyFBToken = async (req, res, next) => {
+
     const token = req.headers.authorization;
     // console.log(token);
 
-    if (!token) {
-        return res.status(401).send({ message: 'unauthorized access' })
+
+    if (!token || !token.startsWith('Bearer ')) {
+        return res.status(401).send({ message: 'unauthorized access' });
     }
+
+
+    // if (!token) {
+    //     return res.status(401).send({ message: 'unauthorized access' })
+    // }
 
     try {
         const idToken = token.split(' ')[1];
@@ -51,7 +59,7 @@ app.get('/', (req, res) => {
 })
 
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@${process.env.DB_HOST}/?appName=crud-server-practice`;
 
@@ -65,12 +73,19 @@ const client = new MongoClient(uri, {
 });
 
 async function run() {
+
+
     try {
+
         // Connect the client to the server	(optional starting in v4.7)
         await client.connect();
 
         const db = client.db('contestify-db');
         const usersCollection = db.collection('users')
+        const contestsCollection = db.collection('contests');
+        const submissionsCollection = db.collection('submissions');
+
+
 
 
         // Prevent duplicate user
@@ -79,22 +94,48 @@ async function run() {
             { unique: true }
         );
 
-        app.post('/users', async (req, res) => {
+        // Prevent duplicate contest per creator
+        await contestsCollection.createIndex(
+            { name: 1, creatorEmail: 1 },
+            { unique: true }
+        );
 
-            const user = req.body;
-            user.role = "user";
-            user.createdAt = new Date();
-            const email = user.email;
-            const userExists = await usersCollection.findOne({ email })
+        await submissionsCollection.createIndex(
+            { contestId: 1, participantEmail: 1 },
+            { unique: true }
+        );
 
-            if (userExists) {
-                return res.send({ message: 'user exists' })
+
+
+
+        // -------User related api -----------
+        app.post('/users', verifyFBToken, async (req, res) => {
+            try {
+
+                const user = req.body;
+
+                user.email = req.decoded_email;
+                user.role = "user";
+                user.createdAt = new Date();
+
+                // if (req.decoded_email !== user.email) {
+                //     return res.status(403).send({ message: 'Forbidden access' });
+                // }
+
+
+                const result = await usersCollection.insertOne(user);
+                res.send(result);
+
+            } catch (error) {
+
+                if (error.code === 11000) {
+                    return res.send({ message: 'user exists' });
+                }
+
+                res.status(500).send({ message: 'Failed to create user' });
             }
+        });
 
-            const result = await usersCollection.insertOne(user);
-            res.send(result);
-
-        })
 
         // get specific user (email)
         app.get('/users', verifyFBToken, async (req, res) => {
@@ -107,6 +148,11 @@ async function run() {
                     return res.status(400).send({ message: "Email is required" });
                 }
 
+                if (req.decoded_email !== email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+
                 const result = await usersCollection.findOne({ email });
                 res.send(result);
 
@@ -114,6 +160,437 @@ async function run() {
                 res.status(500).send({ message: "Failed to fetch user" });
             }
         });
+
+        // ------Contest related api--------
+
+        // Create Contest
+        app.post('/contests', verifyFBToken, async (req, res) => {
+
+            try {
+
+                const contest = req.body;
+
+                if (!contest?.name || !contest?.creatorEmail) {
+                    return res.status(400).send({ message: 'Missing required fields' });
+                }
+
+                // security check (token email must match creatorEmail)
+                if (req.decoded_email !== contest.creatorEmail) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                contest.status = 'pending';
+                contest.createdAt = new Date();
+
+                const result = await contestsCollection.insertOne(contest);
+
+                res.send(result);
+
+            } catch (error) {
+
+                console.error(error);
+
+                // Duplicate contest error
+                if (error.code === 11000) {
+                    return res.status(400).send({
+                        message: 'You already created a contest with this name'
+                    });
+                }
+
+                res.status(500).send({
+                    message: 'Failed to create contest'
+                });
+            }
+
+        });
+
+        // Get approved contests
+        app.get('/contests', async (req, res) => {
+            try {
+
+                const result = await contestsCollection
+                    .find({ status: 'approved' })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send(result);
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Failed to fetch contests' });
+            }
+        });
+
+        // Get contests by creator email
+        app.get('/my-contests', verifyFBToken, async (req, res) => {
+
+            try {
+
+                const { email } = req.query;
+
+                if (!email) {
+                    return res.status(400).send({ message: 'Email is required' });
+                }
+
+                if (req.decoded_email !== email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+
+                const result = await contestsCollection
+                    .find({ creatorEmail: email })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send(result);
+
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Failed to fetch your contests' });
+            }
+        });
+
+
+
+        // Approve contest ( Approve by Admin)
+        app.patch('/contests/:id/approve', verifyFBToken, async (req, res) => {
+            try {
+
+                const { id } = req.params;
+                const email = req.decoded_email;
+
+                const user = await usersCollection.findOne({ email });
+
+                if (!user || user.role !== 'admin') {
+                    return res.status(403).send({ message: 'Admin access required' });
+                }
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+
+                const result = await contestsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: 'approved' } }
+                );
+
+                res.send(result);
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Failed to approve contest' });
+            }
+        });
+
+        // edited by creator
+
+        // Update contest
+        app.patch('/contests/:id', verifyFBToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+
+
+                const { name, description, price, prizeMoney, deadline, taskInstruction, contestType } = req.body;
+
+                const updatedData = {}
+
+                if (name) {
+                    updatedData.name = name;
+                }
+
+                if (description) {
+                    updatedData.description = description;
+                }
+
+                if (price !== undefined) updatedData.price = price;
+                if (prizeMoney !== undefined) updatedData.prizeMoney = prizeMoney;
+                if (deadline) updatedData.deadline = deadline;
+                if (taskInstruction) updatedData.taskInstruction = taskInstruction;
+                if (contestType) updatedData.contestType = contestType;
+
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+
+                if (contest.creatorEmail !== req.decoded_email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                // Only pending can be edited
+                if (contest.status !== 'pending') {
+                    return res.status(400).send({
+                        message: 'Only pending contests can be updated'
+                    });
+                }
+
+                const result = await contestsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: updatedData }
+                );
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to update contest' });
+            }
+        });
+
+
+        // Delete specific contest
+        app.delete('/contests/:id', verifyFBToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+                // Only creator can delete
+                if (contest.creatorEmail !== req.decoded_email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                // Only if pending
+                if (contest.status !== 'pending') {
+                    return res.status(400).send({
+                        message: 'Only pending contests can be deleted'
+                    });
+                }
+
+                const result = await contestsCollection.deleteOne({
+                    _id: new ObjectId(id)
+                });
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to delete contest' });
+            }
+        });
+
+        // -------Submission related api-------
+
+        app.post('/submissions', verifyFBToken, async (req, res) => {
+            try {
+                const submission = req.body;
+
+                if (!submission?.contestId) {
+                    return res.status(400).send({ message: 'Contest ID required' });
+                }
+
+                if (!ObjectId.isValid(submission.contestId)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const contestId = new ObjectId(submission.contestId);
+
+                const contest = await contestsCollection.findOne({
+                    _id: contestId
+                });
+
+                
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+                
+                if (contest.status !== 'approved') {
+                    return res.status(400).send({ message: 'Contest not available' });
+                }
+
+                // deadline check
+                if (contest.deadline && new Date() > new Date(contest.deadline)) {
+                    return res.status(400).send({
+                        message: 'Submission deadline passed'
+                    });
+                }
+
+                //Creator cannot submit
+                if (contest.creatorEmail === req.decoded_email) {
+                    return res.status(403).send({
+                        message: 'Creator cannot submit to own contest'
+                    });
+                }
+
+                submission.participantEmail = req.decoded_email;
+                submission.contestId = contestId;
+                submission.isWinner = false;
+                submission.submittedAt = new Date();
+
+                const result = await submissionsCollection.insertOne(submission);
+
+                res.send(result);
+
+            } catch (error) {
+
+                if (error.code === 11000) {
+                    return res.status(400).send({
+                        message: 'You already submitted this contest'
+                    });
+                }
+
+                res.status(500).send({ message: 'Failed to submit task' });
+            }
+        });
+
+
+
+        app.get('/submissions/contest/:contestId', verifyFBToken, async (req, res) => {
+            try {
+
+                const { contestId } = req.params;
+
+                if (!ObjectId.isValid(contestId)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const contestObjectId = new ObjectId(contestId);
+
+
+                const contest = await contestsCollection.findOne({
+                    _id: contestObjectId
+                });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+
+                if (contest.creatorEmail !== req.decoded_email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                // fetch submissions
+                const result = await submissionsCollection
+                    .find({ contestId: contestObjectId })
+                    .toArray();
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to fetch submissions' });
+            }
+        });
+
+
+        // Find creator contests 
+        app.get('/creator-submissions', verifyFBToken, async (req, res) => {
+            try {
+
+                const email = req.decoded_email;
+
+
+                const myContests = await contestsCollection
+                    .find({ creatorEmail: email })
+                    .toArray();
+
+                const contestIds = myContests.map(c => c._id);
+
+                if (contestIds.length === 0) {
+                    return res.send([]);
+                }
+
+
+                const submissions = await submissionsCollection
+                    .find({ contestId: { $in: contestIds } })
+                    .toArray();
+
+
+                res.send(submissions);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to fetch submissions' });
+            }
+        });
+
+        // select winner related
+
+        app.patch('/submissions/:id/declare-winner', verifyFBToken, async (req, res) => {
+            try {
+
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid submission id' });
+                }
+
+                const submission = await submissionsCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!submission) {
+                    return res.status(404).send({ message: 'Submission not found' });
+                }
+
+                const contest = await contestsCollection.findOne({
+                    _id: submission.contestId
+                });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+
+
+                if (contest.status === 'completed') {
+                    return res.status(400).send({
+                        message: 'Contest already completed'
+                    });
+                }
+
+
+                if (contest.creatorEmail !== req.decoded_email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                // Check already winner exists
+                const existingWinner = await submissionsCollection.findOne({
+                    contestId: submission.contestId,
+                    isWinner: true
+                });
+
+                if (existingWinner) {
+                    return res.status(400).send({
+                        message: 'Winner already declared'
+                    });
+                }
+
+                const result = await submissionsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { isWinner: true } }
+                );
+
+                await contestsCollection.updateOne(
+                    { _id: contest._id },
+                    { $set: { status: 'completed' } }
+                );
+
+
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to declare winner' });
+            }
+        });
+
+
 
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
