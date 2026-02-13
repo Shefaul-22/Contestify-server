@@ -349,7 +349,7 @@ async function run() {
                 if (targetUser.role === role) {
                     return res.status(400).send({ message: 'User already has this role' });
                 }
-                
+
                 const result = await usersCollection.updateOne(
                     { _id: new ObjectId(id) },
                     { $set: { role } }
@@ -391,7 +391,7 @@ async function run() {
         });
 
         // Approve contest ( Approve by Admin)
-        app.patch('/contests/:id/approve', verifyFBToken, async (req, res) => {
+        app.patch('/admin/contests/:id/approve', verifyFBToken, async (req, res) => {
             try {
 
                 const { id } = req.params;
