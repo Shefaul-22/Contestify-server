@@ -221,6 +221,36 @@ async function run() {
             }
         });
 
+        app.get('/contests/:id', verifyFBToken, async (req, res) => {
+            const { id } = req.params;
+
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).send({ message: 'Invalid id' });
+            }
+
+            const contest = await contestsCollection.findOne({
+                _id: new ObjectId(id)
+            });
+
+            if (!contest) {
+                return res.status(404).send({ message: 'Contest not found' });
+            }
+
+            // If contest is approved → anyone logged in can see
+            if (contest.status === 'approved') {
+                return res.send(contest);
+            }
+
+            // If not approved → only creator can see
+            if (contest.creatorEmail !== req.decoded_email) {
+                return res.status(403).send({ message: 'Forbidden access' });
+            }
+
+            res.send(contest);
+        });
+
+
+
         // Get contests by creator email
         app.get('/my-contests', verifyFBToken, async (req, res) => {
 
@@ -251,7 +281,114 @@ async function run() {
             }
         });
 
+        // ----Admin related apis----------------
 
+        app.get('/admin/users', verifyFBToken, async (req, res) => {
+            try {
+                const user = await usersCollection.findOne({
+                    email: req.decoded_email
+                });
+
+                if (!user || user.role !== 'admin') {
+                    return res.status(403).send({ message: 'Admin access required' });
+                }
+
+                const result = await usersCollection
+                    .find()
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to fetch users' });
+            }
+        });
+
+
+        app.patch('/admin/users/:id/role', verifyFBToken, async (req, res) => {
+            try {
+
+                const { id } = req.params;
+                const { role } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid user id' });
+                }
+
+                const allowedRoles = ['user', 'creator', 'admin'];
+
+                if (!allowedRoles.includes(role)) {
+                    return res.status(400).send({ message: 'Invalid role value' });
+                }
+
+
+                const adminUser = await usersCollection.findOne({
+                    email: req.decoded_email
+                });
+
+                if (!adminUser || adminUser.role !== 'admin') {
+                    return res.status(403).send({ message: 'Admin access required' });
+                }
+
+                const targetUser = await usersCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!targetUser) {
+                    return res.status(404).send({ message: 'User not found' });
+                }
+
+                // Prevent self role change
+                if (req.decoded_email === targetUser.email) {
+                    return res.status(400).send({
+                        message: 'You cannot change your own role'
+                    });
+                }
+
+                if (targetUser.role === role) {
+                    return res.status(400).send({ message: 'User already has this role' });
+                }
+                
+                const result = await usersCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { role } }
+                );
+
+                res.send({
+                    message: 'Role updated successfully',
+                    modifiedCount: result.modifiedCount
+                });
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Failed to update role' });
+            }
+        });
+
+
+
+        app.get('/admin/contests', verifyFBToken, async (req, res) => {
+            try {
+                const user = await usersCollection.findOne({
+                    email: req.decoded_email
+                });
+
+                if (!user || user.role !== 'admin') {
+                    return res.status(403).send({ message: 'Admin access required' });
+                }
+
+                const result = await contestsCollection
+                    .find()
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to fetch contests' });
+            }
+        });
 
         // Approve contest ( Approve by Admin)
         app.patch('/contests/:id/approve', verifyFBToken, async (req, res) => {
@@ -270,6 +407,18 @@ async function run() {
                     return res.status(400).send({ message: 'Invalid contest id' });
                 }
 
+                const contest = await contestsCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+                if (contest.status === 'approved') {
+                    return res.status(400).send({ message: 'Already approved' });
+                }
+
 
                 const result = await contestsCollection.updateOne(
                     { _id: new ObjectId(id) },
@@ -284,7 +433,86 @@ async function run() {
             }
         });
 
-        // edited by creator
+        app.patch('/admin/contests/:id/reject', verifyFBToken, async (req, res) => {
+            try {
+                const user = await usersCollection.findOne({
+                    email: req.decoded_email
+                });
+
+                if (!user || user.role !== 'admin') {
+                    return res.status(403).send({ message: 'Admin access required' });
+                }
+
+                const contest = await contestsCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const result = await contestsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: 'rejected' } }
+                );
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to reject contest' });
+            }
+        });
+
+        app.delete('/admin/contests/:id', verifyFBToken, async (req, res) => {
+            try {
+                const user = await usersCollection.findOne({
+                    email: req.decoded_email
+                });
+
+                if (!user || user.role !== 'admin') {
+                    return res.status(403).send({ message: 'Admin access required' });
+                }
+
+                const contest = await contestsCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                await submissionsCollection.deleteMany({
+                    contestId: new ObjectId(id)
+                });
+
+
+                const result = await contestsCollection.deleteOne({
+                    _id: new ObjectId(id)
+                });
+
+                res.send({
+                    message: 'Contest and related submissions deleted',
+                    deletedCount: result.deletedCount
+                });
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to delete contest' });
+            }
+        });
+
+        // edited by creator-----------
 
         // Update contest
         app.patch('/contests/:id', verifyFBToken, async (req, res) => {
@@ -404,12 +632,12 @@ async function run() {
                     _id: contestId
                 });
 
-                
+
                 if (!contest) {
                     return res.status(404).send({ message: 'Contest not found' });
                 }
 
-                
+
                 if (contest.status !== 'approved') {
                     return res.status(400).send({ message: 'Contest not available' });
                 }
