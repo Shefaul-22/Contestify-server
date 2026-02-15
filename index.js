@@ -8,7 +8,11 @@ const port = process.env.PORT || 3000;
 
 
 // middleware
-app.use(cors())
+// app.use(cors())
+app.use(cors({
+    origin: process.env.SITE_DOMAIN,
+    credentials: true
+}));
 app.use(express.json())
 
 
@@ -284,6 +288,7 @@ async function run() {
         });
 
         app.get('/contests/:id', verifyFBToken, async (req, res) => {
+
             const { id } = req.params;
 
             if (!ObjectId.isValid(id)) {
@@ -315,10 +320,12 @@ async function run() {
 
         app.post('/create-contest-payment-checkout', verifyFBToken, async (req, res) => {
             try {
-                
+
+
 
                 const { contestId } = req.body;
                 const email = req.decoded_email;
+
 
                 const contest = await contestsCollection.findOne({
                     _id: new ObjectId(contestId)
@@ -338,7 +345,9 @@ async function run() {
                     return res.status(400).send({ message: "Contest already ended" });
                 }
 
-                const amount = parseInt(contest.entryFee) * 100; // BDT
+                // const amount = parseInt(contest.price) * 100; // BDT
+
+                const amount = Math.round(Number(contest.price) * 100);
 
                 const session = await stripe.checkout.sessions.create({
                     payment_method_types: ['card'],
@@ -378,7 +387,13 @@ async function run() {
 
                 const sessionId = req.query.session_id;
 
+                if (!sessionId) {
+                    return res.status(400).send({ message: "Session ID required" });
+                }
+
                 const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+
 
                 if (session.payment_status !== 'paid') {
                     return res.send({ success: false, message: "Payment not completed" });
@@ -451,6 +466,110 @@ async function run() {
             } catch (err) {
                 console.error("Contest payment error:", err);
                 res.status(500).send({ success: false, message: err.message });
+            }
+        });
+
+        // edited by creator-----------
+
+        // Update contest
+        app.patch('/contests/:id', verifyFBToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+
+
+                const { name, description, price, prizeMoney, deadline, taskInstruction, contestType } = req.body;
+
+                const updatedData = {}
+
+                if (name) {
+                    updatedData.name = name;
+                }
+
+                if (description) {
+                    updatedData.description = description;
+                }
+
+                if (price !== undefined) updatedData.price = price;
+                if (prizeMoney !== undefined) updatedData.prizeMoney = prizeMoney;
+                if (deadline) updatedData.deadline = deadline;
+                if (taskInstruction) updatedData.taskInstruction = taskInstruction;
+                if (contestType) updatedData.contestType = contestType;
+
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+
+                if (contest.creatorEmail !== req.decoded_email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                // Only pending can be edited
+                if (contest.status !== 'pending') {
+                    return res.status(400).send({
+                        message: 'Only pending contests can be updated'
+                    });
+                }
+
+                const result = await contestsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: updatedData }
+                );
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to update contest' });
+            }
+        });
+
+
+        // Delete specific contest
+        app.delete('/contests/:id', verifyFBToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: 'Invalid contest id' });
+                }
+
+                const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
+
+                if (!contest) {
+                    return res.status(404).send({ message: 'Contest not found' });
+                }
+
+                // Only creator can delete
+                if (contest.creatorEmail !== req.decoded_email) {
+                    return res.status(403).send({ message: 'Forbidden access' });
+                }
+
+                // Only if pending
+                if (contest.status !== 'pending') {
+                    return res.status(400).send({
+                        message: 'Only pending contests can be deleted'
+                    });
+                }
+
+                await submissionsCollection.deleteMany({
+                    contestId: new ObjectId(id)
+                });
+
+                const result = await contestsCollection.deleteOne({
+                    _id: new ObjectId(id)
+                });
+
+                res.send(result);
+
+            } catch (error) {
+                res.status(500).send({ message: 'Failed to delete contest' });
             }
         });
 
@@ -724,105 +843,7 @@ async function run() {
             }
         });
 
-        // edited by creator-----------
 
-        // Update contest
-        app.patch('/contests/:id', verifyFBToken, async (req, res) => {
-            try {
-                const { id } = req.params;
-
-
-                const { name, description, price, prizeMoney, deadline, taskInstruction, contestType } = req.body;
-
-                const updatedData = {}
-
-                if (name) {
-                    updatedData.name = name;
-                }
-
-                if (description) {
-                    updatedData.description = description;
-                }
-
-                if (price !== undefined) updatedData.price = price;
-                if (prizeMoney !== undefined) updatedData.prizeMoney = prizeMoney;
-                if (deadline) updatedData.deadline = deadline;
-                if (taskInstruction) updatedData.taskInstruction = taskInstruction;
-                if (contestType) updatedData.contestType = contestType;
-
-
-                if (!ObjectId.isValid(id)) {
-                    return res.status(400).send({ message: 'Invalid contest id' });
-                }
-
-                const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
-
-                if (!contest) {
-                    return res.status(404).send({ message: 'Contest not found' });
-                }
-
-
-                if (contest.creatorEmail !== req.decoded_email) {
-                    return res.status(403).send({ message: 'Forbidden access' });
-                }
-
-                // Only pending can be edited
-                if (contest.status !== 'pending') {
-                    return res.status(400).send({
-                        message: 'Only pending contests can be updated'
-                    });
-                }
-
-                const result = await contestsCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    { $set: updatedData }
-                );
-
-                res.send(result);
-
-            } catch (error) {
-                res.status(500).send({ message: 'Failed to update contest' });
-            }
-        });
-
-
-        // Delete specific contest
-        app.delete('/contests/:id', verifyFBToken, async (req, res) => {
-            try {
-                const { id } = req.params;
-
-                if (!ObjectId.isValid(id)) {
-                    return res.status(400).send({ message: 'Invalid contest id' });
-                }
-
-                const contest = await contestsCollection.findOne({ _id: new ObjectId(id) });
-
-                if (!contest) {
-                    return res.status(404).send({ message: 'Contest not found' });
-                }
-
-                // Only creator can delete
-                if (contest.creatorEmail !== req.decoded_email) {
-                    return res.status(403).send({ message: 'Forbidden access' });
-                }
-
-                // Only if pending
-                if (contest.status !== 'pending') {
-                    return res.status(400).send({
-                        message: 'Only pending contests can be deleted'
-                    });
-                }
-
-                const result = await contestsCollection.deleteOne({
-                    _id: new ObjectId(id)
-                });
-
-                res.send(result);
-
-            } catch (error) {
-                res.status(500).send({ message: 'Failed to delete contest' });
-            }
-        });
 
         // -------Submission related api-------
 
