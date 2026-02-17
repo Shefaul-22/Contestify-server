@@ -247,7 +247,8 @@ async function run() {
                 if (status) {
                     query.status = status;
                 } else {
-                    query.status = 'approved';
+                    query.status = { $in: ['approved', 'completed'] };
+
                 }
 
                 // Search by contest name
@@ -304,7 +305,7 @@ async function run() {
             }
 
             // If contest is approved → anyone logged in can see
-            if (contest.status === 'approved') {
+            if (contest.status === 'approved' || contest.status === 'completed') {
                 return res.send(contest);
             }
 
