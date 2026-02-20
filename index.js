@@ -1,6 +1,9 @@
 const express = require('express');
 const app = express();
 const cors = require('cors')
+
+const cron = require('node-cron');
+
 require('dotenv').config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
@@ -117,6 +120,32 @@ async function run() {
             { unique: true }
         );
 
+        // Deadline & Status index (for auto-complete cron performance)
+        await contestsCollection.createIndex({ status: 1, deadline: 1 });
+
+
+        cron.schedule('*/1 * * * *', async () => {
+            try {
+                const now = new Date();
+
+                const result = await contestsCollection.updateMany(
+                    {
+                        status: 'approved',
+                        deadline: { $lt: now }
+                    },
+                    {
+                        $set: { status: 'completed' }
+                    }
+                );
+
+                if (result.modifiedCount > 0) {
+                    console.log(`${result.modifiedCount} contests auto-completed`);
+                }
+
+            } catch (error) {
+                console.error('Auto-complete error:', error);
+            }
+        });
 
 
 
@@ -270,7 +299,7 @@ async function run() {
 
                 const contests = await contestsCollection
                     .find(query)
-                    .sort({ deadline: 1, createdAt: -1 })
+                    .sort({ createdAt: -1, deadline: 1 })
                     .skip(skip)
                     .limit(limit)
                     .toArray();
