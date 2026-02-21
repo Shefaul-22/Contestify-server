@@ -465,13 +465,7 @@ async function run() {
                     });
                 }
 
-                // Update contest → add participant
-                const updateResult = await contestsCollection.updateOne(
-                    { _id: new ObjectId(contestId) },
-                    {
-                        $addToSet: { participants: email }
-                    }
-                );
+
 
                 //  Save payment record
                 const paymentRecord = {
@@ -485,12 +479,28 @@ async function run() {
                     paymentStatus: session.payment_status
                 };
 
-                await paymentCollection.insertOne(paymentRecord);
+                try {
+                    await paymentCollection.insertOne(paymentRecord);
+                } catch (error) {
+                    if (error.code === 11000) {
+                        return res.send({
+                            success: true,
+                            message: "Payment already recorded"
+                        });
+                    }
+                    throw error;
+                }
+
+                // Then register participant
+                await contestsCollection.updateOne(
+                    { _id: new ObjectId(contestId) },
+                    { $addToSet: { participants: email } }
+                );
+
 
                 res.send({
                     success: true,
                     message: "User registered successfully",
-                    updateResult
                 });
 
             } catch (err) {
@@ -590,6 +600,10 @@ async function run() {
 
                 await submissionsCollection.deleteMany({
                     contestId: new ObjectId(id)
+                });
+
+                await paymentCollection.deleteMany({
+                    contestId: id  // because you stored contestId as string
                 });
 
                 const result = await contestsCollection.deleteOne({
@@ -1077,8 +1091,8 @@ async function run() {
                             status: 'completed',
                             winner: {
                                 email: submission.participantEmail,
-                                name: winnerUser?.name || '',
-                                photo: winnerUser?.photo || '',
+                                name: winnerUser?.displayName || '',
+                                photo: winnerUser?.photoURL || '',
                                 declaredAt: new Date()
                             }
                         }
